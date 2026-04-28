@@ -153,9 +153,11 @@ function CoocCard({perspectives,bucket}){
   const minN=Math.min(p1.N,p2?p2.N:Infinity);
   const border=bucket==="reinforcement"?"#10b981":bucket==="conflict"?"#ef4444":"#475569";
   const ieBg=bucket==="reinforcement"?"rgba(16,185,129,0.12)":bucket==="conflict"?"rgba(239,68,68,0.12)":"rgba(100,116,139,0.08)";
+  const bothPositive=p2?(p1.IE>0&&p2.IE>0):p1.IE>0;
+  const bothNegative=p2?(p1.IE<0&&p2.IE<0):p1.IE<0;
   let interp="";
-  if(bucket==="reinforcement")interp="동시 발동 시 의도 방향 강화";
-  else if(bucket==="conflict")interp="동시 발동 시 의도와 반대";
+  if(bucket==="reinforcement") interp=bothPositive?"동시 발동 시 양쪽 수익률 상승":"동시 발동 시 양쪽 수익률 하락";
+  else if(bucket==="conflict") interp="동시 발동 시 IE 방향 불일치 (충돌)";
   else interp="통계적으로 유의하지 않음";
   return(
     <div style={{background:"#1e293b",borderRadius:10,padding:14,borderLeft:"4px solid "+border,position:"relative"}}>
@@ -249,10 +251,24 @@ function Dashboard({data,hp,setHp,sig,setSig,af,setAf}){
     });
     Object.values(coocMap).forEach(perspectives=>{
       const p1=perspectives[0];
-      const aRes=resolveType(p1.A_type||"unknown",p1.B_type||"unknown");
+      const p2=perspectives.length>1?perspectives[1]:null;
       const minN=Math.min(...perspectives.map(p=>p.N));
       const bestP=Math.min(...perspectives.map(p=>p.p_value));
-      const cls=classifyIE(p1.IE,bestP,aRes,minN);
+      const anySig=bestP<0.10;
+
+      let cls="neutral";
+      if(minN<30){
+        cls="neutral";
+      } else if(p2){
+        const sameSign=(p1.IE>0&&p2.IE>0)||(p1.IE<0&&p2.IE<0);
+        if(anySig&&sameSign) cls="reinforcement";
+        else if(anySig&&!sameSign) cls="conflict";
+        else cls="neutral";
+      } else {
+        const aRes=resolveType(p1.A_type||"unknown",p1.B_type||"unknown");
+        cls=classifyIE(p1.IE,p1.p_value,aRes,minN);
+      }
+
       const item={type:"cooc",perspectives,bucket:cls};
       if(cls==="reinforcement")rein.push(item);else if(cls==="conflict")conf.push(item);else neut.push(item);
     });
@@ -400,7 +416,6 @@ function App(){
       <div style={{background:"#1e293b",borderBottom:"1px solid #334155",padding:"12px 28px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
         <div style={{display:"flex",alignItems:"center",gap:16}}>
           <h1 style={{fontSize:18,fontWeight:800,color:"#f1f5f9",margin:0}}>🧪 L2 Signal Interaction Effect</h1>
-          {/* Market Tabs */}
           <div style={{display:"flex",gap:4,background:"#0f172a",borderRadius:8,padding:3}}>
             <button onClick={()=>{setMarket("KR");setSig("ALL")}} style={{padding:"6px 16px",borderRadius:6,border:"none",cursor:"pointer",fontSize:13,fontWeight:800,background:market==="KR"?"#3b82f6":"transparent",color:market==="KR"?"white":"#64748b"}}>
               🇰🇷 KR {hasKR?"":"(미로드)"}
@@ -431,7 +446,6 @@ function App(){
         Co-occ ±3 거래일 | Lead-lag 4~20 거래일 | 2-way Clustered SE (CGM) | Hit Ratio = AR&gt;0 비율 (risk: AR&lt;0 비율)
       </div>
 
-      {/* Content */}
       {data
         ? <Dashboard data={data} hp={hp} setHp={setHp} sig={sig} setSig={setSig} af={af} setAf={setAf}/>
         : <div style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:400}}>
@@ -445,14 +459,15 @@ function App(){
           </div>
       }
 
-      {/* Legend */}
       <div style={{padding:"0 28px 20px"}}>
         <div style={{padding:14,background:"#1e293b",borderRadius:8,fontSize:11,color:"#64748b",display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:16}}>
           <div>
-            <div style={{fontWeight:700,color:"#94a3b8",marginBottom:4}}>📐 방향 판정</div>
-            <div>💡 기회포착: IE &gt; 0 = 강화</div>
-            <div>🚨 리스크: IE &lt; 0 = 강화 (반전)</div>
-            <div>🔄 적응형: partner 방향 따름</div>
+            <div style={{fontWeight:700,color:"#94a3b8",marginBottom:4}}>📐 분류 기준</div>
+            <div>⊕ 동시: 양쪽 IE 부호 같으면 강화, 다르면 충돌</div>
+            <div>→ 순차: leader(화살표 왼쪽) 관점으로 판정</div>
+            <div style={{marginTop:4}}>💡 opportunity: IE &gt; 0 = 강화</div>
+            <div>🚨 risk: IE &lt; 0 = 강화</div>
+            <div>🔄 adaptive: partner 방향 따름</div>
           </div>
           <div>
             <div style={{fontWeight:700,color:"#94a3b8",marginBottom:4}}>📊 통계 기준</div>
