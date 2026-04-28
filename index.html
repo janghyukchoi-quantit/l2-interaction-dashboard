@@ -1,0 +1,466 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>L2 Signal Interaction Effect Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;600;700;800&family=JetBrains+Mono:wght@400;700;900&display=swap" rel="stylesheet">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.9/babel.min.js"></script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{font-family:'Manrope',sans-serif;background:#0f172a;color:#e2e8f0}
+::-webkit-scrollbar{width:6px}::-webkit-scrollbar-track{background:#1e293b}::-webkit-scrollbar-thumb{background:#475569;border-radius:3px}
+select{outline:none}button{transition:all 0.15s}button:hover{opacity:0.85}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const {useState,useEffect,useMemo} = React;
+
+const SN={
+  "ST-01A":"기관 순매수","ST-01B":"외국인 순매수","ST-02A":"기관 순매도","ST-02B":"외국인 순매도",
+  "ST-03":"공매도 급증","ST-04":"신용 급등","ST-05":"골든크로스","ST-06":"데드크로스",
+  "ST-07":"상향 돌파","ST-08":"하향 이탈","ST-09":"과열 포착","ST-10":"침체 감지",
+  "ST-11":"조정 구간","ST-12":"도지 캔들","ST-13":"해머 캔들","ST-14":"13F 편입",
+  "ST-15":"13F 편출","ST-16":"13F 비중변화",
+  "FS-01":"트리플 크라운","FS-02":"트리플 악재","FS-03":"펀더멘털-주가 괴리","FS-04":"낙폭반등 전조",
+  "FS-05":"장중 매집","FS-06":"재무구조 악화","FS-07":"기대감 과열",
+  "CR-01":"감사의견 비적정","CR-02":"횡령·배임","CR-03":"시장 경보",
+  "FN-01":"어닝 서프라이즈","FN-02":"어닝 쇼크","FN-03":"내부자 매수","FN-04":"내부자 매도",
+  "FN-05":"자사주 매입","FN-06":"자사주 소각","FN-07":"대규모 계약",
+};
+const TC={opportunity:"#10b981",risk:"#ef4444",adaptive:"#f59e0b",unknown:"#9ca3af"};
+const TL={opportunity:"기회포착",risk:"리스크",adaptive:"적응형",unknown:"미정"};
+const TE={opportunity:"💡",risk:"🚨",adaptive:"🔄",unknown:"❓"};
+
+function parseCSV(text){
+  const lines=text.trim().split("\n");const h=lines[0].split(",");
+  return lines.slice(1).map(line=>{
+    const v=line.split(",");const o={};
+    h.forEach((k,i)=>{o[k.trim()]=v[i]?.trim()||""});
+    o.Hold=parseInt(o.Hold);o.N=parseInt(o.N);
+    o.IE=parseFloat(o.IE);o.p_value=parseFloat(o.p_value);
+    o.A_alone_AR=parseFloat(o.A_alone_AR);o.Group_AR=parseFloat(o.Group_AR);
+    o.Hit_alone=parseFloat(o.Hit_alone);o.Hit_group=parseFloat(o.Hit_group);
+    return o;
+  }).filter(r=>!isNaN(r.IE));
+}
+function sigStars(p){return p<0.01?"***":p<0.05?"**":p<0.10?"*":""}
+function resolveType(raw,partner){
+  if(raw!=="adaptive")return raw;
+  if(!partner||partner==="adaptive")return"opportunity";
+  return partner;
+}
+function classifyIE(ie,p,res,n){
+  if(n<30)return"neutral";
+  const intended=res==="risk"?ie<0:ie>0;
+  const sig=p<0.10;
+  if(sig&&intended)return"reinforcement";
+  if(sig&&!intended)return"conflict";
+  return"neutral";
+}
+function sigName(id){return SN[id]||id}
+function TypeBadge({type,resolved}){
+  const show=resolved&&resolved!==type;
+  return(<span style={{display:"inline-flex",alignItems:"center",gap:3,borderRadius:10,fontWeight:700,fontSize:10,padding:"1px 6px",background:TC[resolved||type]+"20",color:TC[resolved||type],border:"1px solid "+TC[resolved||type]+"30"}}>{TE[type]}{show?"→"+TE[resolved]:""} {TL[resolved||type]}</span>);
+}
+function HitBar({label,value,isRisk}){
+  if(isNaN(value))return null;
+  const good=isRisk?(value>50):(value>50);
+  const c=good?"#10b981":"#ef4444";
+  return(
+    <div style={{display:"flex",alignItems:"center",gap:6,fontSize:10}}>
+      <span style={{color:"#64748b",minWidth:28}}>{label}</span>
+      <div style={{flex:1,height:6,background:"#334155",borderRadius:3,overflow:"hidden"}}>
+        <div style={{width:value+"%",height:"100%",background:c,borderRadius:3,transition:"width 0.3s"}}/>
+      </div>
+      <span style={{color:c,fontWeight:700,fontFamily:"'JetBrains Mono',monospace",minWidth:38}}>{value.toFixed(1)}%</span>
+    </div>
+  );
+}
+
+function LLCard({row,bucket}){
+  const ie=row.IE*100;const stars=sigStars(row.p_value);
+  const aRaw=row.A_type||"unknown";const bRaw=row.B_type||"unknown";
+  const aRes=resolveType(aRaw,bRaw);const bRes=resolveType(bRaw,aRaw);
+  const isRisk=aRes==="risk";
+  const dirNote=isRisk?(ie<0?"리스크 예측 강화 ↓":"리스크 예측 약화 ↑"):(ie>0?"수익률 강화 ↑":"수익률 약화 ↓");
+  const border=bucket==="reinforcement"?"#10b981":bucket==="conflict"?"#ef4444":"#475569";
+  const ieC=bucket==="reinforcement"?"#10b981":bucket==="conflict"?"#ef4444":"#94a3b8";
+  const ieBg=bucket==="reinforcement"?"rgba(16,185,129,0.12)":bucket==="conflict"?"rgba(239,68,68,0.12)":"rgba(100,116,139,0.08)";
+  const analysisLabel=row.Analysis.replace("LL ","");
+  const parts=analysisLabel.split("->");
+  const leftSig=(parts[0]||"").trim();
+  const rightSig=(parts[1]||"").trim();
+  const leftIsA=leftSig===row.Signal_A;
+  const leftType=leftIsA?aRaw:bRaw;
+  const leftRes=leftIsA?aRes:bRes;
+  const rightType=leftIsA?bRaw:aRaw;
+  const rightRes=leftIsA?bRes:aRes;
+  return(
+    <div style={{background:"#1e293b",borderRadius:10,padding:14,borderLeft:"4px solid "+border,position:"relative"}}>
+      {row.N<30&&<div style={{position:"absolute",top:8,right:10,fontSize:9,fontWeight:700,color:"#f59e0b",background:"#f59e0b18",padding:"1px 6px",borderRadius:8}}>N&lt;30 참고</div>}
+      <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
+        <span style={{fontSize:10,fontWeight:700,color:"#e2e8f0",background:"#8b5cf620",padding:"2px 6px",borderRadius:4}}>→ 순차</span>
+        <span style={{fontSize:13,fontWeight:800,color:"#f1f5f9"}}>{parts[0]?.trim()}</span>
+        <span style={{color:"#6366f1",fontWeight:800}}>→</span>
+        <span style={{fontSize:13,fontWeight:700,color:"#cbd5e1"}}>{parts[1]?.trim()}</span>
+      </div>
+      <div style={{fontSize:10,color:"#94a3b8",marginBottom:8}}>
+        {sigName(leftSig)} → {sigName(rightSig)}
+      </div>
+      <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap",alignItems:"center"}}>
+        <TypeBadge type={leftType} resolved={leftRes}/><span style={{color:"#6366f1",fontWeight:800,fontSize:10}}>→</span><TypeBadge type={rightType} resolved={rightRes}/>
+        <span style={{marginLeft:"auto",fontSize:10,color:"#64748b",background:"#334155",padding:"1px 6px",borderRadius:4}}>{row["L2 Type"]}</span>
+      </div>
+      <div style={{background:ieBg,borderRadius:8,padding:"10px 12px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <div>
+          <div style={{fontSize:24,fontWeight:900,color:ieC,fontFamily:"'JetBrains Mono',monospace"}}>{ie>=0?"+":""}{ie.toFixed(2)}%<span style={{fontSize:14,marginLeft:4}}>{stars}</span></div>
+          <div style={{fontSize:10,color:"#94a3b8",marginTop:2}}>{dirNote}</div>
+        </div>
+        <div style={{textAlign:"right",fontSize:11}}>
+          <div style={{color:"#94a3b8"}}>단독 <span style={{color:"#e2e8f0",fontFamily:"'JetBrains Mono',monospace"}}>{(row.A_alone_AR*100).toFixed(2)}%</span></div>
+          <div style={{color:"#94a3b8"}}>함께 <span style={{color:"#e2e8f0",fontFamily:"'JetBrains Mono',monospace"}}>{(row.Group_AR*100).toFixed(2)}%</span></div>
+        </div>
+      </div>
+      {(!isNaN(row.Hit_alone)||!isNaN(row.Hit_group))&&(
+        <div style={{marginTop:8,display:"grid",gap:3}}>
+          <HitBar label="단독" value={row.Hit_alone} isRisk={isRisk}/>
+          <HitBar label="함께" value={row.Hit_group} isRisk={isRisk}/>
+        </div>
+      )}
+      <div style={{display:"flex",justifyContent:"space-between",marginTop:8,fontSize:10,color:"#64748b"}}>
+        <span>N={row.N}</span><span>p={row.p_value<0.0001?"<0.0001":row.p_value.toFixed(4)}</span><span>{row.Hold}D</span>
+      </div>
+    </div>
+  );
+}
+
+function CoocCard({perspectives,bucket}){
+  const p1=perspectives[0];const p2=perspectives.length>1?perspectives[1]:null;
+  const sigA=p1.Signal_A||"";const sigB=p1.Partner||"";
+  const aRaw=p1.A_type||"unknown";const bRaw=p1.B_type||"unknown";
+  const aRes=resolveType(aRaw,bRaw);const bRes=resolveType(bRaw,aRaw);
+  const isRisk=aRes==="risk";
+  const ie1=p1.IE*100;const ie2=p2?p2.IE*100:null;
+  const stars1=sigStars(p1.p_value);const stars2=p2?sigStars(p2.p_value):"";
+  const minN=Math.min(p1.N,p2?p2.N:Infinity);
+  const border=bucket==="reinforcement"?"#10b981":bucket==="conflict"?"#ef4444":"#475569";
+  const ieBg=bucket==="reinforcement"?"rgba(16,185,129,0.12)":bucket==="conflict"?"rgba(239,68,68,0.12)":"rgba(100,116,139,0.08)";
+  let interp="";
+  if(bucket==="reinforcement")interp="동시 발동 시 의도 방향 강화";
+  else if(bucket==="conflict")interp="동시 발동 시 의도와 반대";
+  else interp="통계적으로 유의하지 않음";
+  return(
+    <div style={{background:"#1e293b",borderRadius:10,padding:14,borderLeft:"4px solid "+border,position:"relative"}}>
+      {minN<30&&<div style={{position:"absolute",top:8,right:10,fontSize:9,fontWeight:700,color:"#f59e0b",background:"#f59e0b18",padding:"1px 6px",borderRadius:8}}>N&lt;30 참고</div>}
+      <div style={{display:"flex",alignItems:"center",gap:6,marginBottom:4}}>
+        <span style={{fontSize:10,fontWeight:700,color:"#e2e8f0",background:"#06b6d420",padding:"2px 6px",borderRadius:4}}>⊕ 동시</span>
+        <span style={{fontSize:13,fontWeight:800,color:"#f1f5f9"}}>{sigA}</span>
+        <span style={{color:"#475569"}}>×</span>
+        <span style={{fontSize:13,fontWeight:700,color:"#cbd5e1"}}>{sigB}</span>
+      </div>
+      <div style={{fontSize:10,color:"#94a3b8",marginBottom:8}}>
+        {sigName(sigA)} × {sigName(sigB)}
+      </div>
+      <div style={{display:"flex",gap:6,marginBottom:10,flexWrap:"wrap",alignItems:"center"}}>
+        <TypeBadge type={aRaw} resolved={aRes}/><span style={{color:"#475569",fontSize:10}}>×</span><TypeBadge type={bRaw} resolved={bRes}/>
+        <span style={{marginLeft:"auto",fontSize:10,color:"#64748b",background:"#334155",padding:"1px 6px",borderRadius:4}}>{p1["L2 Type"]}</span>
+      </div>
+      <div style={{background:ieBg,borderRadius:8,padding:"10px 12px"}}>
+        <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:p2?6:0}}>
+          <div style={{fontSize:11}}>
+            <span style={{color:"#94a3b8"}}>{sigA} </span>
+            <span style={{color:"#64748b"}}>단독 {(p1.A_alone_AR*100).toFixed(2)}% → 함께 {(p1.Group_AR*100).toFixed(2)}%</span>
+          </div>
+          <div style={{fontSize:16,fontWeight:900,fontFamily:"'JetBrains Mono',monospace",color:border}}>{ie1>=0?"+":""}{ie1.toFixed(2)}%{stars1}</div>
+        </div>
+        {p2&&(
+          <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",paddingTop:6,borderTop:"1px solid #334155"}}>
+            <div style={{fontSize:11}}>
+              <span style={{color:"#94a3b8"}}>{p2.Signal_A} </span>
+              <span style={{color:"#64748b"}}>단독 {(p2.A_alone_AR*100).toFixed(2)}% → 함께 {(p2.Group_AR*100).toFixed(2)}%</span>
+            </div>
+            <div style={{fontSize:16,fontWeight:900,fontFamily:"'JetBrains Mono',monospace",color:border}}>{ie2>=0?"+":""}{ie2.toFixed(2)}%{stars2}</div>
+          </div>
+        )}
+      </div>
+      {(!isNaN(p1.Hit_alone)||!isNaN(p1.Hit_group))&&(
+        <div style={{marginTop:8,display:"grid",gap:3}}>
+          <HitBar label="단독" value={p1.Hit_alone} isRisk={isRisk}/>
+          <HitBar label="함께" value={p1.Hit_group} isRisk={isRisk}/>
+        </div>
+      )}
+      <div style={{display:"flex",justifyContent:"space-between",marginTop:8,fontSize:10,color:"#64748b"}}>
+        <span>N={p1.N}{p2&&p2.N!==p1.N?" / "+p2.N:""}</span>
+        <span style={{color:"#94a3b8",fontStyle:"italic"}}>{interp}</span>
+        <span>{p1.Hold}D</span>
+      </div>
+    </div>
+  );
+}
+
+function SummaryBar({r,c,n}){
+  const t=r+c+n||1;
+  return(
+    <div style={{marginBottom:20}}>
+      <div style={{display:"flex",height:28,borderRadius:8,overflow:"hidden",background:"#334155"}}>
+        {r>0&&<div style={{width:(r/t*100)+"%",background:"#10b981",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:"white",minWidth:30}}>{r}</div>}
+        {n>0&&<div style={{width:(n/t*100)+"%",background:"#475569",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:"#cbd5e1",minWidth:30}}>{n}</div>}
+        {c>0&&<div style={{width:(c/t*100)+"%",background:"#ef4444",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,fontWeight:700,color:"white",minWidth:30}}>{c}</div>}
+      </div>
+      <div style={{display:"flex",justifyContent:"space-between",fontSize:10,color:"#64748b",marginTop:4}}>
+        <span>💪 강화 {r}건 ({(r/t*100).toFixed(0)}%)</span>
+        <span>⚪ 비유의 {n}건 ({(n/t*100).toFixed(0)}%)</span>
+        <span>⚡ 충돌 {c}건 ({(c/t*100).toFixed(0)}%)</span>
+      </div>
+    </div>
+  );
+}
+
+function Dashboard({data,hp,setHp,sig,setSig,af,setAf}){
+  const hps=useMemo(()=>data?[...new Set(data.map(r=>r.Hold))].sort((a,b)=>a-b):[],[data]);
+  const sigs=useMemo(()=>data?["ALL",...[...new Set(data.map(r=>r.Signal_A))].sort()]:[],[data]);
+  const filtered=useMemo(()=>{
+    if(!data)return[];
+    let f=data.filter(r=>r.Hold===hp);
+    if(sig!=="ALL")f=f.filter(r=>r.Signal_A===sig);
+    if(af==="COOC")f=f.filter(r=>r.Analysis.startsWith("Co-occ"));
+    if(af==="LL")f=f.filter(r=>r.Analysis.startsWith("LL"));
+    return f;
+  },[data,hp,sig,af]);
+
+  const buckets=useMemo(()=>{
+    const rein=[],conf=[],neut=[];
+    const coocRows=filtered.filter(r=>r.Analysis.startsWith("Co-occ"));
+    const llRows=filtered.filter(r=>r.Analysis.startsWith("LL"));
+    const coocMap={};
+    coocRows.forEach(r=>{
+      const pk=[r.Signal_A,r.Partner].sort().join("|");
+      if(!coocMap[pk])coocMap[pk]=[];
+      const exists=coocMap[pk].some(x=>x.Signal_A===r.Signal_A&&x.Partner===r.Partner);
+      if(!exists)coocMap[pk].push(r);
+    });
+    Object.values(coocMap).forEach(perspectives=>{
+      const p1=perspectives[0];
+      const aRes=resolveType(p1.A_type||"unknown",p1.B_type||"unknown");
+      const minN=Math.min(...perspectives.map(p=>p.N));
+      const bestP=Math.min(...perspectives.map(p=>p.p_value));
+      const cls=classifyIE(p1.IE,bestP,aRes,minN);
+      const item={type:"cooc",perspectives,bucket:cls};
+      if(cls==="reinforcement")rein.push(item);else if(cls==="conflict")conf.push(item);else neut.push(item);
+    });
+    const llSeen=new Set();
+    llRows.forEach(r=>{
+      const key=r.Signal_A+"|"+r.Analysis;
+      if(llSeen.has(key))return;llSeen.add(key);
+      const aRes=resolveType(r.A_type||"unknown",r.B_type||"unknown");
+      const cls=classifyIE(r.IE,r.p_value,aRes,r.N);
+      const item={type:"ll",row:r,bucket:cls};
+      if(cls==="reinforcement")rein.push(item);else if(cls==="conflict")conf.push(item);else neut.push(item);
+    });
+    const sortFn=(a,b)=>{
+      const ieA=a.type==="cooc"?Math.abs(a.perspectives[0].IE):Math.abs(a.row.IE);
+      const ieB=b.type==="cooc"?Math.abs(b.perspectives[0].IE):Math.abs(b.row.IE);
+      return ieB-ieA;
+    };
+    rein.sort(sortFn);conf.sort(sortFn);neut.sort(sortFn);
+    return{reinforcement:rein,conflict:conf,neutral:neut};
+  },[filtered]);
+
+  const renderColumn=(title,emoji,color,items,bucketName)=>(
+    <div>
+      <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:12,padding:"8px 14px",background:color+"10",borderRadius:8,border:"1px solid "+color+"25"}}>
+        <span style={{fontSize:20}}>{emoji}</span>
+        <div>
+          <div style={{fontSize:14,fontWeight:800,color:color}}>{title}</div>
+          <div style={{fontSize:10,color:color+"aa"}}>{bucketName==="reinforcement"?"함께 발동 시 의도한 방향 강화 (p<0.10, N≥30)":bucketName==="conflict"?"함께 발동 시 의도와 반대 방향 (p<0.10, N≥30)":"통계적 비유의 (p≥0.10) 또는 N<30"}</div>
+        </div>
+        <span style={{marginLeft:"auto",fontSize:22,fontWeight:900,color:color,fontFamily:"'JetBrains Mono',monospace"}}>{items.length}</span>
+      </div>
+      <div style={{display:"grid",gap:10,maxHeight:"calc(100vh - 320px)",overflowY:"auto"}}>
+        {items.length===0?<div style={{padding:20,textAlign:"center",color:"#475569",fontSize:13}}>해당 없음</div>
+        :items.map((item,i)=>item.type==="cooc"?<CoocCard key={i} perspectives={item.perspectives} bucket={bucketName}/>:<LLCard key={i} row={item.row} bucket={bucketName}/>)}
+      </div>
+    </div>
+  );
+
+  return(
+    <div>
+      <div style={{padding:"12px 28px",background:"rgba(30,41,59,0.5)",borderBottom:"1px solid #334155",display:"flex",gap:6,alignItems:"center",flexWrap:"wrap"}}>
+        <span style={{fontSize:12,color:"#64748b",marginRight:8,fontWeight:700}}>보유기간</span>
+        {hps.map(h=>(<button key={h} onClick={()=>setHp(h)} style={{padding:"7px 18px",borderRadius:20,border:"none",cursor:"pointer",fontSize:13,fontWeight:800,background:hp===h?"linear-gradient(135deg,#3b82f6,#6366f1)":"#334155",color:hp===h?"white":"#94a3b8",boxShadow:hp===h?"0 2px 8px rgba(59,130,246,0.3)":"none"}}>{h}D</button>))}
+        <div style={{width:1,height:24,background:"#334155",margin:"0 12px"}}/>
+        <span style={{fontSize:12,color:"#64748b",marginRight:4,fontWeight:700}}>시그널</span>
+        <select value={sig} onChange={e=>setSig(e.target.value)} style={{padding:"6px 10px",borderRadius:6,border:"1px solid #334155",background:"#0f172a",color:"#e2e8f0",fontSize:12,fontWeight:600}}>
+          {sigs.map(s=><option key={s} value={s}>{s}{s!=="ALL"&&SN[s]?" ("+SN[s]+")":""}</option>)}
+        </select>
+        <div style={{width:1,height:24,background:"#334155",margin:"0 12px"}}/>
+        {[["ALL","전체"],["COOC","⊕ Co-occ"],["LL","→ Lead-lag"]].map(([v,l])=>(<button key={v} onClick={()=>setAf(v)} style={{padding:"5px 12px",borderRadius:6,border:"none",cursor:"pointer",fontSize:11,fontWeight:700,background:af===v?"#475569":"transparent",color:af===v?"#e2e8f0":"#64748b"}}>{l}</button>))}
+      </div>
+      <div style={{padding:"20px 28px"}}>
+        <SummaryBar r={buckets.reinforcement.length} c={buckets.conflict.length} n={buckets.neutral.length}/>
+        <div style={{display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:20,alignItems:"start"}}>
+          {renderColumn("강화 Reinforcement","💪","#10b981",buckets.reinforcement,"reinforcement")}
+          {renderColumn("비유의 Not Significant","⚪","#94a3b8",buckets.neutral,"neutral")}
+          {renderColumn("충돌 Conflict","⚡","#ef4444",buckets.conflict,"conflict")}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function App(){
+  const [krData,setKrData]=useState(null);
+  const [usData,setUsData]=useState(null);
+  const [market,setMarket]=useState("KR");
+  const [hp,setHp]=useState(5);
+  const [sig,setSig]=useState("ALL");
+  const [af,setAf]=useState("ALL");
+  const [loading,setLoading]=useState(true);
+  const [updatedAt,setUpdatedAt]=useState(null);
+
+  // ★ 자동 로드: GitHub Pages에서 CSV를 자동으로 가져옴
+  useEffect(()=>{
+    const base=window.location.href.replace(/\/[^/]*$/,"/");
+    const ts="?t="+Date.now();
+    Promise.allSettled([
+      fetch(base+"l2_ie_KR.csv"+ts).then(r=>{if(!r.ok)throw new Error();return r.text()}),
+      fetch(base+"l2_ie_US.csv"+ts).then(r=>{if(!r.ok)throw new Error();return r.text()}),
+      fetch(base+"meta.json"+ts).then(r=>{if(!r.ok)throw new Error();return r.json()}),
+    ]).then(([kr,us,meta])=>{
+      if(kr.status==="fulfilled"){setKrData(parseCSV(kr.value))}
+      if(us.status==="fulfilled"){setUsData(parseCSV(us.value))}
+      if(meta.status==="fulfilled"){setUpdatedAt(meta.value.updated_at||null)}
+      setLoading(false);
+    });
+  },[]);
+
+  const handleFile=(mkt)=>(e)=>{
+    const f=e.target.files[0];if(!f)return;
+    const r=new FileReader();
+    r.onload=(ev)=>{
+      const parsed=parseCSV(ev.target.result);
+      if(mkt==="KR")setKrData(parsed);else setUsData(parsed);
+    };
+    r.readAsText(f);
+  };
+
+  const data=market==="KR"?krData:usData;
+  const hasKR=!!krData;const hasUS=!!usData;
+
+  if(loading){
+    return(
+      <div style={{minHeight:"100vh",background:"#0f172a",display:"flex",alignItems:"center",justifyContent:"center"}}>
+        <div style={{textAlign:"center"}}>
+          <div style={{width:40,height:40,border:"3px solid #334155",borderTop:"3px solid #3b82f6",borderRadius:"50%",animation:"spin 0.8s linear infinite",margin:"0 auto 16px"}}/>
+          <div style={{color:"#94a3b8",fontSize:14}}>데이터 로딩 중...</div>
+        </div>
+      </div>
+    );
+  }
+
+  if(!hasKR&&!hasUS){
+    return(
+      <div style={{minHeight:"100vh",background:"#0f172a",display:"flex",alignItems:"center",justifyContent:"center"}}>
+        <div style={{background:"#1e293b",borderRadius:16,padding:48,textAlign:"center",maxWidth:520,border:"1px solid #334155"}}>
+          <div style={{fontSize:48,marginBottom:12}}>🧪</div>
+          <h1 style={{color:"#f1f5f9",fontSize:22,fontWeight:800,margin:"0 0 6px"}}>L2 Signal Interaction Effect</h1>
+          <p style={{color:"#94a3b8",fontSize:13,margin:"0 0 28px"}}>시그널 쌍별 수익률 강화/충돌 분석 대시보드</p>
+          <div style={{display:"flex",gap:16,justifyContent:"center"}}>
+            <label style={{display:"flex",flexDirection:"column",alignItems:"center",gap:8,padding:"20px 32px",borderRadius:12,cursor:"pointer",background:"linear-gradient(135deg,#1e40af,#3b82f6)",color:"white",fontWeight:700,fontSize:14,border:"2px solid transparent",transition:"all 0.2s"}}>
+              🇰🇷 KR CSV 업로드
+              <span style={{fontSize:10,fontWeight:400,opacity:0.7}}>l2_ie_KR.csv</span>
+              <input type="file" accept=".csv" onChange={handleFile("KR")} style={{display:"none"}}/>
+            </label>
+            <label style={{display:"flex",flexDirection:"column",alignItems:"center",gap:8,padding:"20px 32px",borderRadius:12,cursor:"pointer",background:"linear-gradient(135deg,#7c2d12,#dc2626)",color:"white",fontWeight:700,fontSize:14,border:"2px solid transparent",transition:"all 0.2s"}}>
+              🇺🇸 US CSV 업로드
+              <span style={{fontSize:10,fontWeight:400,opacity:0.7}}>l2_ie_US.csv</span>
+              <input type="file" accept=".csv" onChange={handleFile("US")} style={{display:"none"}}/>
+            </label>
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  return(
+    <div style={{minHeight:"100vh",background:"#0f172a",color:"#e2e8f0"}}>
+      <div style={{background:"#1e293b",borderBottom:"1px solid #334155",padding:"12px 28px",display:"flex",alignItems:"center",justifyContent:"space-between"}}>
+        <div style={{display:"flex",alignItems:"center",gap:16}}>
+          <h1 style={{fontSize:18,fontWeight:800,color:"#f1f5f9",margin:0}}>🧪 L2 Signal Interaction Effect</h1>
+          <div style={{display:"flex",gap:4,background:"#0f172a",borderRadius:8,padding:3}}>
+            <button onClick={()=>{setMarket("KR");setSig("ALL")}} style={{padding:"6px 16px",borderRadius:6,border:"none",cursor:"pointer",fontSize:13,fontWeight:800,background:market==="KR"?"#3b82f6":"transparent",color:market==="KR"?"white":"#64748b"}}>
+              🇰🇷 KR {hasKR?"":"(미로드)"}
+            </button>
+            <button onClick={()=>{setMarket("US");setSig("ALL")}} style={{padding:"6px 16px",borderRadius:6,border:"none",cursor:"pointer",fontSize:13,fontWeight:800,background:market==="US"?"#dc2626":"transparent",color:market==="US"?"white":"#64748b"}}>
+              🇺🇸 US {hasUS?"":"(미로드)"}
+            </button>
+          </div>
+        </div>
+        <div style={{display:"flex",alignItems:"center",gap:12}}>
+          {updatedAt&&<div style={{fontSize:10,color:"#64748b",background:"#0f172a",padding:"4px 10px",borderRadius:6}}>🕐 {updatedAt}</div>}
+          <div style={{fontSize:10,color:"#94a3b8",background:"#0f172a",padding:"6px 12px",borderRadius:6,lineHeight:1.6}}>
+            <div>💡 opportunity: IE &gt; 0 = 강화</div>
+            <div>🚨 risk: IE &lt; 0 = 강화 <span style={{color:"#f59e0b"}}>(반전)</span></div>
+            <div>🔄 adaptive: partner 방향 따름</div>
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:4}}>
+            <label style={{padding:"4px 10px",borderRadius:4,cursor:"pointer",background:"#334155",color:"#94a3b8",fontSize:10,fontWeight:600,textAlign:"center"}}>
+              🇰🇷 KR{hasKR?" ✅":""}<input type="file" accept=".csv" onChange={handleFile("KR")} style={{display:"none"}}/>
+            </label>
+            <label style={{padding:"4px 10px",borderRadius:4,cursor:"pointer",background:"#334155",color:"#94a3b8",fontSize:10,fontWeight:600,textAlign:"center"}}>
+              🇺🇸 US{hasUS?" ✅":""}<input type="file" accept=".csv" onChange={handleFile("US")} style={{display:"none"}}/>
+            </label>
+          </div>
+        </div>
+      </div>
+      <div style={{fontSize:11,color:"#64748b",padding:"4px 28px",background:"#1e293b80",borderBottom:"1px solid #334155"}}>
+        Co-occ ±3 거래일 | Lead-lag 4~20 거래일 | 2-way Clustered SE (CGM) | Hit Ratio = AR&gt;0 비율 (risk: AR&lt;0 비율)
+      </div>
+      {data
+        ? <Dashboard data={data} hp={hp} setHp={setHp} sig={sig} setSig={setSig} af={af} setAf={setAf}/>
+        : <div style={{display:"flex",alignItems:"center",justifyContent:"center",minHeight:400}}>
+            <div style={{textAlign:"center",color:"#64748b"}}>
+              <div style={{fontSize:40,marginBottom:12}}>{market==="KR"?"🇰🇷":"🇺🇸"}</div>
+              <div style={{fontSize:16,fontWeight:700,marginBottom:8}}>{market} 데이터가 없습니다</div>
+              <label style={{display:"inline-flex",padding:"10px 20px",borderRadius:8,cursor:"pointer",background:"#334155",color:"#94a3b8",fontWeight:600,fontSize:13}}>
+                CSV 업로드<input type="file" accept=".csv" onChange={handleFile(market)} style={{display:"none"}}/>
+              </label>
+            </div>
+          </div>
+      }
+      <div style={{padding:"0 28px 20px"}}>
+        <div style={{padding:14,background:"#1e293b",borderRadius:8,fontSize:11,color:"#64748b",display:"grid",gridTemplateColumns:"1fr 1fr 1fr",gap:16}}>
+          <div>
+            <div style={{fontWeight:700,color:"#94a3b8",marginBottom:4}}>📐 방향 판정</div>
+            <div>💡 기회포착: IE &gt; 0 = 강화</div>
+            <div>🚨 리스크: IE &lt; 0 = 강화 (반전)</div>
+            <div>🔄 적응형: partner 방향 따름</div>
+          </div>
+          <div>
+            <div style={{fontWeight:700,color:"#94a3b8",marginBottom:4}}>📊 통계 기준</div>
+            <div>*** p&lt;0.01 | ** p&lt;0.05 | * p&lt;0.10</div>
+            <div>2-way Cluster SE (CGM)</div>
+            <div>N&lt;30 → 비유의 (참고만)</div>
+          </div>
+          <div>
+            <div style={{fontWeight:700,color:"#94a3b8",marginBottom:4}}>📋 Hit Ratio</div>
+            <div>단독: A만 발동 시 AR&gt;0 비율</div>
+            <div>함께: A+B 동시 발동 시 AR&gt;0 비율</div>
+            <div>🚨 risk는 AR&lt;0 비율로 해석</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App/>);
+</script>
+</body>
+</html>
